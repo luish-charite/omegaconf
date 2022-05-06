@@ -280,29 +280,42 @@ class BaseContainer(Container, ABC):
         """sets value with key in destination node """
         src_node = src._get_node(key, validate_access=False)
         dest_node = dest._get_node(key, validate_access=False)
+        src_value = src_node._value()
         src_node_missing = _is_missing_literal(src_value)
         if force:
-            dest.__setitem__(key, src_value)
+            if not src_node_missing or (src_node_missing and dest_node is None):
+                dest.__setitem__(key, src_value)
         else:
-            try:
-                from omegaconf import AnyNode
-                if isinstance(dest_node, AnyNode):
-                    if src_node is not None:
-                        if src_node_missing:
-                            node = copy.copy(src_node)
-                            # if src node is missing, use the value from the dest_node,
-                            # but validate it against the type of the src node before assigment
-                            node._set_value(dest_node._value())
-                        else:
-                            node = src_node
-                        dest.__setitem__(key, node)
-                else:
-                    if dest_node is not None and not src_node_missing:
-                        dest_node._set_value(src_value)
+            if dest_node is not None:
+                try:
+                    from omegaconf import AnyNode
+                    if isinstance(dest_node, AnyNode):
+                        if src_node is not None:
+                            if src_node_missing:
+                                node = copy.copy(src_node)
+                                # if src node is missing, use the value from the dest_node,
+                                # but validate it against the type of the src node before assigment
+                                node._set_value(dest_node._value())
+                            else:
+                                node = src_node
+                            dest.__setitem__(key, node)
                     else:
-                        dest.__setitem__(key, src_value)
-            except (ValidationError, ReadonlyConfigError) as e:
-                dest._format_and_raise(key=key, value=src_value, cause=e)
+                        if dest_node is not None:
+                            if not src_node_missing:
+                                dest_node._set_value(src_value)
+                        else:
+                            dest.__setitem__(key, src_value)
+                except (ValidationError, ReadonlyConfigError) as e:
+                    dest._format_and_raise(key=key, value=src_value, cause=e)
+            else: 
+                from omegaconf import open_dict
+                src_type = src._metadata.object_type
+                if is_structured_config(src_type):
+                    # verified to be compatible above in _validate_merge
+                    with open_dict(dest):
+                        dest[key] = src._get_node(key)
+                else:
+                    dest[key] = src._get_node(key)
         
     @staticmethod
     def _map_merge_on_key(dest: Optional[Node], src: Optional[Node], key: str, val: Any, how: str = "outer"):
@@ -395,7 +408,7 @@ class BaseContainer(Container, ABC):
             assert src_node is None or isinstance(src_node, Node)
             assert dest_node is None or isinstance(dest_node, Node)
 
-            if isinstance(dest_node, DictConfig):
+            if isinstance(dest_node, DictConfig) and src_node is not None:
                 dest_node._validate_merge(value=src_node)
             missing_src_value = _is_missing_value(src_value)
 
@@ -421,28 +434,10 @@ class BaseContainer(Container, ABC):
                 )
                 dest_node = dest._get_node(key)
 
-            if dest_node is not None:
-                if isinstance(dest_node, BaseContainer):
-                    if isinstance(src_value, BaseContainer):
-                        dest_node._merge_with(src_value)
-                    elif not missing_src_value:
-                        BaseContainer._map_merge_on_key(dest, src, key, src_value, how=how)
-                else:
-                    if isinstance(src_value, BaseContainer):
-                        BaseContainer._map_merge_on_key(dest, src, key, src_value, how=how)
-                    else:
-                        assert isinstance(dest_node, ValueNode)
-                        BaseContainer._map_merge_on_key(dest, src, key, src_value, how=how)
-                        # Compare to literal missing, ignoring interpolation
+            if isinstance(dest_node, BaseContainer) and isinstance(src_value, BaseContainer) and not missing_src_value:
+                dest_node._merge_with(src_value)
             else:
-                from omegaconf import open_dict
-                if is_structured_config(src_type):
-                    # verified to be compatible above in _validate_merge
-                    with open_dict(dest):
-                        val = src._get_node(key)
-                else:
-                    val = src._get_node(key)
-                BaseContainer._map_merge_on_key(dest, src, key, val, how=how)
+                BaseContainer._map_merge_on_key(dest, src, key, src_value, how=how)
 
         _update_types(node=dest, ref_type=src_ref_type, object_type=src_type)
 
