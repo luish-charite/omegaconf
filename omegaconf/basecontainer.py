@@ -274,9 +274,65 @@ class BaseContainer(Container, ABC):
 
             return retlist
         assert False
-
+        
     @staticmethod
-    def _map_merge(dest: "BaseContainer", src: "BaseContainer") -> None:
+    def _map_set_key_val(dest: Optional['DictConfig'], src: Optional['DictConfig'], key, src_value, force: bool = False):
+        """sets value with key in destination node """
+        src_node = src._get_node(key, validate_access=False)
+        dest_node = dest._get_node(key, validate_access=False)
+        src_node_missing = _is_missing_literal(src_value)
+        if force:
+            dest.__setitem__(key, src_value)
+        else:
+            try:
+                from omegaconf import AnyNode
+                if isinstance(dest_node, AnyNode):
+                    if src_node is not None:
+                        if src_node_missing:
+                            node = copy.copy(src_node)
+                            # if src node is missing, use the value from the dest_node,
+                            # but validate it against the type of the src node before assigment
+                            node._set_value(dest_node._value())
+                        else:
+                            node = src_node
+                        dest.__setitem__(key, node)
+                else:
+                    if dest_node is not None and not src_node_missing:
+                        dest_node._set_value(src_value)
+                    else:
+                        dest.__setitem__(key, src_value)
+            except (ValidationError, ReadonlyConfigError) as e:
+                dest._format_and_raise(key=key, value=src_value, cause=e)
+        
+    @staticmethod
+    def _map_merge_on_key(dest: Optional[Node], src: Optional[Node], key: str, val: Any, how: str = "outer"):
+        """merge map and val for different merge options"""
+        src_node = src._get_node(key, validate_access=False)
+        dest_node = dest._get_node(key, validate_access=False)
+        are_diff_lvl = isinstance(src_node, BaseContainer) or isinstance(dest_node, BaseContainer)
+        if how == "left":
+            if src_node is not None and dest_node is not None and not are_diff_lvl: 
+                BaseContainer._map_set_key_val(dest, src, key, val)
+        elif how == "inner":
+            if dest_node is not None:
+                if src_node is None or are_diff_lvl:
+                    # Nodes have different nesting levels
+                    assert not (isinstance(src_node, BaseContainer) and isinstance(dest_node, BaseContainer))
+                    dest.__delitem__(key)
+                else:
+                    BaseContainer._map_set_key_val(dest, src, key, val)
+        elif how == "outer-left":
+            if dest_node is None:
+                BaseContainer._map_set_key_val(dest, src, key, val, force=are_diff_lvl)
+            elif src_node is not None and not are_diff_lvl:
+                BaseContainer._map_set_key_val(dest, src, key, val)
+        elif how in ("outer", "outer-right"):
+            # Take over item from src dict
+            if src_node is not None:
+                BaseContainer._map_set_key_val(dest, src, key, val, force=are_diff_lvl)
+            
+    @staticmethod
+    def _map_merge(dest: "BaseContainer", src: "BaseContainer", how: str = "outer") -> None:
         """merge src into dest and return a new copy, does not modified input"""
         from omegaconf import AnyNode, DictConfig, ValueNode
 
@@ -327,8 +383,13 @@ class BaseContainer(Container, ABC):
         if (dest._is_interpolation() or dest._is_missing()) and not src._is_missing():
             expand(dest)
 
-        src_items = src.items_ex(resolve=False) if not src._is_missing() else []
-        for key, src_value in src_items:
+        src_items = {k:v for k,v in src.items_ex(resolve=False)} if not src._is_missing() else {}
+        dest_items = {k:v for k,v in dest.items_ex(resolve=False)} if not dest._is_missing() else {}
+        src_keys = set(src_items.keys())
+        dest_keys = set(dest_items.keys())
+        all_keys = src_keys.union(dest_keys)
+        for key in all_keys:
+            src_value = src_items.get(key)
             src_node = src._get_node(key, validate_access=False)
             dest_node = dest._get_node(key, validate_access=False)
             assert src_node is None or isinstance(src_node, Node)
@@ -336,7 +397,6 @@ class BaseContainer(Container, ABC):
 
             if isinstance(dest_node, DictConfig):
                 dest_node._validate_merge(value=src_node)
-
             missing_src_value = _is_missing_value(src_value)
 
             if (
@@ -366,40 +426,23 @@ class BaseContainer(Container, ABC):
                     if isinstance(src_value, BaseContainer):
                         dest_node._merge_with(src_value)
                     elif not missing_src_value:
-                        dest.__setitem__(key, src_value)
+                        BaseContainer._map_merge_on_key(dest, src, key, src_value, how=how)
                 else:
                     if isinstance(src_value, BaseContainer):
-                        dest.__setitem__(key, src_value)
+                        BaseContainer._map_merge_on_key(dest, src, key, src_value, how=how)
                     else:
                         assert isinstance(dest_node, ValueNode)
-                        assert isinstance(src_node, ValueNode)
+                        BaseContainer._map_merge_on_key(dest, src, key, src_value, how=how)
                         # Compare to literal missing, ignoring interpolation
-                        src_node_missing = _is_missing_literal(src_value)
-                        try:
-                            if isinstance(dest_node, AnyNode):
-                                if src_node_missing:
-                                    node = copy.copy(src_node)
-                                    # if src node is missing, use the value from the dest_node,
-                                    # but validate it against the type of the src node before assigment
-                                    node._set_value(dest_node._value())
-                                else:
-                                    node = src_node
-                                dest.__setitem__(key, node)
-                            else:
-                                if not src_node_missing:
-                                    dest_node._set_value(src_value)
-
-                        except (ValidationError, ReadonlyConfigError) as e:
-                            dest._format_and_raise(key=key, value=src_value, cause=e)
             else:
                 from omegaconf import open_dict
-
                 if is_structured_config(src_type):
                     # verified to be compatible above in _validate_merge
                     with open_dict(dest):
-                        dest[key] = src._get_node(key)
+                        val = src._get_node(key)
                 else:
-                    dest[key] = src._get_node(key)
+                    val = src._get_node(key)
+                BaseContainer._map_merge_on_key(dest, src, key, val, how=how)
 
         _update_types(node=dest, ref_type=src_ref_type, object_type=src_type)
 
@@ -455,9 +498,10 @@ class BaseContainer(Container, ABC):
         *others: Union[
             "BaseContainer", Dict[str, Any], List[Any], Tuple[Any, ...], Any
         ],
+        how: str = "outer"
     ) -> None:
         try:
-            self._merge_with(*others)
+            self._merge_with(*others, how=how)
         except Exception as e:
             self._format_and_raise(key=None, value=None, cause=e)
 
@@ -466,6 +510,7 @@ class BaseContainer(Container, ABC):
         *others: Union[
             "BaseContainer", Dict[str, Any], List[Any], Tuple[Any, ...], Any
         ],
+        how: str = "outer"
     ) -> None:
         from .dictconfig import DictConfig
         from .listconfig import ListConfig
@@ -481,7 +526,7 @@ class BaseContainer(Container, ABC):
             other = _ensure_container(other, flags=my_flags)
 
             if isinstance(self, DictConfig) and isinstance(other, DictConfig):
-                BaseContainer._map_merge(self, other)
+                BaseContainer._map_merge(self, other, how=how)
             elif isinstance(self, ListConfig) and isinstance(other, ListConfig):
                 BaseContainer._list_merge(self, other)
             else:

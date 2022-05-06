@@ -388,6 +388,51 @@ def test_merge(
         with expected:
             merge_function(*configs)
 
+@mark.parametrize(
+    ("config1", "config2", "how", "expected"),
+    [
+        param(
+            {"a": 1, "b": {"b1": 1, "b2": 2}, "d": 5},
+            {"a":2, "b": 3, "c": 4}, 
+            "left",
+            {"a": 2, "b": {"b1": 1, "b2": 2}, "d": 5},
+            id="left"
+        ),
+        param(
+            {"a": 1, "b": {"b1": 1, "b2": 2}, "d": 5},
+            {"a":2, "b": 3, "c": 4},
+            "inner",
+            {"a": 2},
+            id="inner"
+        ),
+        param(
+            {"a": 1, "b": {"b1": 1, "b2": 2}, "d": 5},
+            {"a":2, "b": 3, "c": 4}, 
+            "outer-left",
+            {"a": 2, "b": {"b1": 1, "b2": 2}, "c": 4, "d": 5},
+            id="outer-left"
+        ),
+        param(
+            {"a": 1, "b": {"b1": 1, "b2": 2}, "d": 5}, 
+            {"a":2, "b": 3, "c": 4},
+            "outer-right",
+            {"a": 2, "b": 3, "c": 4, "d": 5},
+            id="outer-right"  
+        ),
+        param(
+            {"a": 1, "b": {"b1": 1, "b2": 2}, "d": 5}, 
+            {"a":2, "b": 3, "c": 4}, 
+            "outer",
+            {"a": 2, "b": 3, "c": 4, "d": 5},
+            id="outer"  
+        )
+    ]
+)
+def test_merge_how(config1, config2, how, expected) -> None:
+    config1 = OmegaConf.create(config1)
+    config2 = OmegaConf.create(config2)
+    merge_config = OmegaConf.merge(config1, config2, how=how)
+    assert merge_config == expected
 
 @mark.parametrize(
     "inputs,expected,ref_type,is_optional",
@@ -821,7 +866,7 @@ def test_merge_list_list() -> None:
     b = OmegaConf.create([4, 5, 6])
     a.merge_with(b)
     assert a == b
-
+    
 
 @mark.parametrize("merge_func", [OmegaConf.merge, OmegaConf.unsafe_merge])
 @mark.parametrize(

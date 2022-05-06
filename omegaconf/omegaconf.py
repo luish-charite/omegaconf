@@ -252,6 +252,7 @@ class OmegaConf:
             Tuple[Any, ...],
             Any,
         ],
+        how="outer"
     ) -> Union[ListConfig, DictConfig]:
         """
         Merge a list of previously created configs into a single one
@@ -264,7 +265,7 @@ class OmegaConf:
         assert isinstance(target, (DictConfig, ListConfig))
 
         with flag_override(target, "readonly", False):
-            target.merge_with(*configs[1:])
+            target.merge_with(*configs[1:], how=how)
             turned_readonly = target._get_flag("readonly") is True
 
         if turned_readonly:
